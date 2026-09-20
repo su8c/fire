@@ -1,0 +1,55 @@
+name: Chrme
+
+on: 
+  workflow_dispatch:
+    inputs:
+      authcode:
+        description: 'Enter code'
+        required: true
+      pincode:
+        description: 'Six digit Pin'
+        default: '123456'
+        required: true
+      go:
+        description: 'Fetch go?'
+        required: true
+        type: boolean
+        default: false
+  
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+    - uses: actions/checkout@v2
+    
+    - name: Initializing Setup
+      shell: pwsh
+      run: |
+        Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
+        $P = $env:TEMP + '\chromeremotedesktophost.msi'
+        Invoke-WebRequest 'https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi' -OutFile $P
+        Start-Process $P -Wait
+        Remove-Item $P
+      
+    - name: Starting CRD
+      shell: pwsh
+      run: |
+        & "C:\Program Files\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe" --code="${{ github.event.inputs.authcode }}" --pin="${{ github.event.inputs.pincode }}" --redirect-url="https://remotesktop.google.com/_/oauthredirect"
+        
+    - name: GO
+      if: ${{ github.event.inputs.go == 'true' }}
+      shell: pwsh
+      run: |
+        mkdir "C:\Users\runneradmin\Downloads\who"
+        python ./gofile.py -pp "C:\Users\runneradmin\Downloads\who" "${{ secrets.files }}"
+        
+    - name: Keep Alive
+      shell: pwsh
+      run: |
+        $i = 360
+        do {
+            Write-Host $i
+            Start-Sleep -Seconds 60
+            $i--
+        } while ($i -gt 0)
