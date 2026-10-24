@@ -1,0 +1,100 @@
+name: Downloader → Hugging Face
+
+on:
+  workflow_dispatch:
+    inputs:
+      links:
+        description: "Space-separated: magnet links, .torrent URLs, or http(s)/ftp links"
+        required: false
+        type: string
+      links_file:
+        description: "Optional repo file with one link per line (supports '<link> :: <select> :: <exclude>')"
+        required: false
+        type: string
+      select:
+        description: "Torrent files to download: indexes 0,3-5 / globs *.mkv / re:regex (empty = all)"
+        required: false
+        type: string
+      exclude:
+        description: "Torrent files to skip (same syntax as select)"
+        required: false
+        type: string
+      list_only:
+        description: "Only list the files inside each torrent (job summary), download nothing"
+        required: false
+        type: boolean
+        default: false
+      hf_prefix:
+        description: "Folder inside the HF bucket(s) to upload into"
+        required: false
+        type: string
+        default: "downloads"
+      stall_minutes:
+        description: "Give up on a torrent after this many minutes without progress"
+        required: false
+        type: string
+        default: "30"
+      add_trackers:
+        description: "Add a few public trackers to torrents"
+        required: false
+        type: boolean
+        default: true
+      free_disk:
+        description: "Free ~25 GB of runner disk first (removes preinstalled SDKs)"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: downloader
+  cancel-in-progress: false
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      DATA_DIR: ${{ github.workspace }}/data
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        if: ${{ inputs.free_disk }}
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qbittorrent-nox aria2
+          pip install --quiet "huggingface_hub>=1.5" requests
+
+      - name: Download
+        env:
+          LINKS: ${{ inputs.links }}
+          LINKS_FILE: ${{ inputs.links_file }}
+          SELECT: ${{ inputs.select }}
+          EXCLUDE: ${{ inputs.exclude }}
+          LIST_ONLY: ${{ inputs.list_only }}
+          ADD_TRACKERS: ${{ inputs.add_trackers }}
+          STALL_MIN: ${{ inputs.stall_minutes }}
+        run: python scripts/run_downloads.py
+
+      - name: Upload to Hugging Face (account pool)
+        if: ${{ !cancelled() && !inputs.list_only }}
+        env:
+          HF_TOKENS: ${{ secrets.HF_TOKENS }}
+          HF_BUCKET_NAME: ${{ vars.HF_BUCKET_NAME || 'data' }}
+          HF_QUOTA_GB: ${{ vars.HF_QUOTA_GB || '95' }}
+          HF_PREFIX: ${{ inputs.hf_prefix }}
+        run: |
+          if [ -z "$(find "$DATA_DIR" -type f 2>/dev/null | head -1)" ]; then
+            echo "nothing downloaded, nothing to upload"; exit 0
+          fi
+          python scripts/hfpool.py upload "$DATA_DIR" --prefix "$HF_PREFIX"
+          python scripts/hfpool.py status >> "$GITHUB_STEP_SUMMARY"
